@@ -177,16 +177,27 @@ int webm_read_frame(struct WebmInputContext *webm_ctx, uint8_t **buffer,
 
   const mkvparser::Block::Frame &frame =
       block->GetFrame(webm_ctx->block_frame_index);
+
+  int total_len = frame.len;
+
+  if (block->GetFrameAddCount() > 0) {
+    const mkvparser::Block::Frame &frame_a =
+        block->GetFrameAdd(webm_ctx->block_frame_index);
+    total_len += frame_a.len;
+  }
+
   ++webm_ctx->block_frame_index;
-  if (frame.len > static_cast<long>(*buffer_size)) {
+
+  if (total_len > static_cast<long>(*buffer_size)) {
     delete[] * buffer;
-    *buffer = new uint8_t[frame.len];
+    *buffer = new uint8_t[total_len];
     if (*buffer == nullptr) {
       return -1;
     }
     webm_ctx->buffer = *buffer;
   }
-  *buffer_size = frame.len;
+  *buffer_size = total_len;
+
   webm_ctx->timestamp_ns = block->GetTime(cluster);
   webm_ctx->is_key_frame = block->IsKey();
 

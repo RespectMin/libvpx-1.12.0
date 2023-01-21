@@ -6448,12 +6448,12 @@ long Cluster::Parse(long long& pos, long& len) const {
     if (pBlock == NULL)
       return E_PARSE_FAILED;
 
-    const long long start = pBlock->m_start;
+    const long long start = pBlock->m_start.first;
 
     if ((total >= 0) && (start > total))
       return E_PARSE_FAILED;  // defend against trucated stream
 
-    const long long size = pBlock->m_size;
+    const long long size = pBlock->m_size.first;
 
     const long long stop = start + size;
     if (cluster_stop >= 0 && stop > cluster_stop)
@@ -7220,8 +7220,8 @@ long Cluster::CreateBlockGroup(long long start_offset, long long size,
   long long next = 0;  // nonce
   long long duration = -1;  // really, this is unsigned
 
-  long long bpos = -1;
-  long long bsize = -1;
+  std::pair<long long, long long> bpos = { -1, -1 };
+  std::pair<long long, long long> bsize = { -1, -1 };
 
   while (pos < stop) {
     long len;
@@ -7238,10 +7238,13 @@ long Cluster::CreateBlockGroup(long long start_offset, long long size,
     pos += len;  // consume size
 
     if (id == libwebm::kMkvBlock) {
-      if (bpos < 0) {  // Block ID
-        bpos = pos;
-        bsize = size;
+      if (bpos.first < 0) {  // Block ID
+        bpos.first = pos;
+        bsize.first = size;
       }
+    } else if (id == libwebm::kMkvBlockAdditions) {
+      bpos.second = pos;
+      bsize.second = size;
     } else if (id == libwebm::kMkvBlockDuration) {
       if (size > 8)
         return E_FILE_FORMAT_INVALID;
@@ -7272,12 +7275,12 @@ long Cluster::CreateBlockGroup(long long start_offset, long long size,
     if (pos > stop)
       return E_FILE_FORMAT_INVALID;
   }
-  if (bpos < 0)
+  if (bpos.first < 0)
     return E_FILE_FORMAT_INVALID;
 
   if (pos != stop)
     return E_FILE_FORMAT_INVALID;
-  assert(bsize >= 0);
+  assert(bsize.first >= 0);
 
   const long idx = m_entries_count;
 
@@ -7602,15 +7605,17 @@ long BlockEntry::GetIndex() const { return m_index; }
 
 SimpleBlock::SimpleBlock(Cluster* pCluster, long idx, long long start,
                          long long size)
-    : BlockEntry(pCluster, idx), m_block(start, size, 0) {}
+    : BlockEntry(pCluster, idx), m_block({start, -1}, {size, -1}, 0) {}
 
 long SimpleBlock::Parse() { return m_block.Parse(m_pCluster); }
 BlockEntry::Kind SimpleBlock::GetKind() const { return kBlockSimple; }
 const Block* SimpleBlock::GetBlock() const { return &m_block; }
 
-BlockGroup::BlockGroup(Cluster* pCluster, long idx, long long block_start,
-                       long long block_size, long long prev, long long next,
-                       long long duration, long long discard_padding)
+BlockGroup::BlockGroup(Cluster *pCluster, long idx,
+                       std::pair<long long, long long> block_start,
+                       std::pair<long long, long long> block_size,
+                       long long prev, long long next, long long duration,
+                       long long discard_padding)
     : BlockEntry(pCluster, idx),
       m_block(block_start, block_size, discard_padding),
       m_prev(prev),
@@ -7634,33 +7639,49 @@ long long BlockGroup::GetPrevTimeCode() const { return m_prev; }
 long long BlockGroup::GetNextTimeCode() const { return m_next; }
 long long BlockGroup::GetDurationTimeCode() const { return m_duration; }
 
-Block::Block(long long start, long long size_, long long discard_padding)
+Block::Block(const std::pair<long long, long long> &start, const std::pair<long long, long long> &size_, long long discard_padding)
     : m_start(start),
       m_size(size_),
       m_track(0),
       m_timecode(-1),
       m_flags(0),
-      m_frames(NULL),
-      m_frame_count(-1),
+      m_frames({ NULL, NULL }),
+      m_frame_count({ -1, -1 }),
       m_discard_padding(discard_padding) {}
 
-Block::~Block() { delete[] m_frames; }
+Block::Block(std::pair<long long, long long> &&start, std::pair<long long, long long> &&size_, long long discard_padding)
+    : m_start(start),
+      m_size(size_),
+      m_track(0),
+      m_timecode(-1),
+      m_flags(0),
+      m_frames({ NULL, NULL }),
+      m_frame_count({ -1, -1 }),
+      m_discard_padding(discard_padding) {}
+
+Block::~Block() {
+  delete[] m_frames.first;
+  delete[] m_frames.second;
+}
 
 long Block::Parse(const Cluster* pCluster) {
+  if (const int res = ParseAdd(pCluster))
+    return res;
+
   if (pCluster == NULL)
     return -1;
 
   if (pCluster->m_pSegment == NULL)
     return -1;
 
-  assert(m_start >= 0);
-  assert(m_size >= 0);
+  assert(m_start.first >= 0);
+  assert(m_size.first >= 0);
   assert(m_track <= 0);
-  assert(m_frames == NULL);
-  assert(m_frame_count <= 0);
+  assert(m_frames.first == NULL);
+  assert(m_frame_count.first <= 0);
 
-  long long pos = m_start;
-  const long long stop = m_start + m_size;
+  long long pos = m_start.first;
+  const long long stop = m_start.first + m_size.first;
 
   long len;
 
@@ -7713,12 +7734,12 @@ long Block::Parse(const Cluster* pCluster) {
     if (pos > stop)
       return E_FILE_FORMAT_INVALID;
 
-    m_frame_count = 1;
-    m_frames = new (std::nothrow) Frame[m_frame_count];
-    if (m_frames == NULL)
+    m_frame_count.first = 1;
+    m_frames.first = new (std::nothrow) Frame[m_frame_count.first];
+    if (m_frames.first == NULL)
       return -1;
 
-    Frame& f = m_frames[0];
+    Frame &f = m_frames.first[0];
     f.pos = pos;
 
     const long long frame_size = stop - pos;
@@ -7745,21 +7766,21 @@ long Block::Parse(const Cluster* pCluster) {
   if (pos > stop)
     return E_FILE_FORMAT_INVALID;
 
-  m_frame_count = int(biased_count) + 1;
+  m_frame_count.first = int(biased_count) + 1;
 
-  m_frames = new (std::nothrow) Frame[m_frame_count];
-  if (m_frames == NULL)
+  m_frames.first = new (std::nothrow) Frame[m_frame_count.first];
+  if (m_frames.first == NULL)
     return -1;
 
-  if (!m_frames)
+  if (!m_frames.first)
     return E_FILE_FORMAT_INVALID;
 
   if (lacing == 1) {  // Xiph
-    Frame* pf = m_frames;
-    Frame* const pf_end = pf + m_frame_count;
+    Frame *pf = m_frames.first;
+    Frame *const pf_end = pf + m_frame_count.first;
 
     long long size = 0;
-    int frame_count = m_frame_count;
+    int frame_count = m_frame_count.first;
 
     while (frame_count > 1) {
       long frame_size = 0;
@@ -7823,7 +7844,7 @@ long Block::Parse(const Cluster* pCluster) {
       f.len = static_cast<long>(frame_size);
     }
 
-    pf = m_frames;
+    pf = m_frames.first;
     while (pf != pf_end) {
       Frame& f = *pf++;
       assert((pos + f.len) <= stop);
@@ -7845,16 +7866,16 @@ long Block::Parse(const Cluster* pCluster) {
 
     const long long total_size = stop - pos;
 
-    if ((total_size % m_frame_count) != 0)
+    if ((total_size % m_frame_count.first) != 0)
       return E_FILE_FORMAT_INVALID;
 
-    const long long frame_size = total_size / m_frame_count;
+    const long long frame_size = total_size / m_frame_count.first;
 
     if (frame_size > LONG_MAX || frame_size <= 0)
       return E_FILE_FORMAT_INVALID;
 
-    Frame* pf = m_frames;
-    Frame* const pf_end = pf + m_frame_count;
+    Frame *pf = m_frames.first;
+    Frame *const pf_end = pf + m_frame_count.first;
 
     while (pf != pf_end) {
       assert((pos + frame_size) <= stop);
@@ -7880,7 +7901,7 @@ long Block::Parse(const Cluster* pCluster) {
       return E_FILE_FORMAT_INVALID;
 
     long long size = 0;
-    int frame_count = m_frame_count;
+    int frame_count = m_frame_count.first;
 
     long long frame_size = ReadUInt(pReader, pos, len);
 
@@ -7898,8 +7919,8 @@ long Block::Parse(const Cluster* pCluster) {
     if ((pos + frame_size) > stop)
       return E_FILE_FORMAT_INVALID;
 
-    Frame* pf = m_frames;
-    Frame* const pf_end = pf + m_frame_count;
+    Frame *pf = m_frames.first;
+    Frame *const pf_end = pf + m_frame_count.first;
 
     {
       Frame& curr = *pf;
@@ -7999,7 +8020,7 @@ long Block::Parse(const Cluster* pCluster) {
       curr.len = static_cast<long>(frame_size);
     }
 
-    pf = m_frames;
+    pf = m_frames.first;
     while (pf != pf_end) {
       Frame& f = *pf++;
       if ((pos + f.len) > stop)
@@ -8014,6 +8035,66 @@ long Block::Parse(const Cluster* pCluster) {
   }
 
   return 0;  // success
+}
+
+
+// Note: Parse additional block (alpha)
+// With the start of addition, this function reads kMkvBlockMore, kMkvBlcokAddID, kMkvBlockAdditional, respectively.
+// We can get the frame in kMkvBlockAdditional.
+// For more infomation, check 'WriteBlock' function in mkvmuxerutil.cc and understand the file structure.
+long Block::ParseAdd(const Cluster* pCluster) {
+  if (pCluster == NULL) return -1;
+
+  if (pCluster->m_pSegment == NULL) return -1;
+
+  if (m_size.second <= 0) return 0;
+
+  assert(m_start.second >= 0);
+  assert(m_frames.second == NULL);
+  assert(m_frame_count.second <= 0);
+
+  auto pos = m_start.second;
+  const auto stop = m_start.second + m_size.second;
+
+  long len;
+  __int64 id, size = 0;
+
+  IMkvReader *const pReader = pCluster->m_pSegment->m_pReader;
+
+  id = ReadID(pReader, pos, len);
+  if (id == libwebm::kMkvBlockMore) {
+    pos += len;
+    size = ReadUInt(pReader, pos, len);
+    pos += len;
+  }
+
+  id = ReadID(pReader, pos, len);
+  if (id == libwebm::kMkvBlockAddID) {
+    pos += len;
+    size = ReadUInt(pReader, pos, len);
+    pos += len;
+  }
+
+  id = ReadID(pReader, pos, len);
+  if (id == libwebm::kMkvBlockAdditional) {
+    pos += len;
+    size = ReadUInt(pReader, pos, len);
+    pos += len;
+  }
+
+  m_frame_count.second = 1;
+  m_frames.second = new (std::nothrow) Frame[m_frame_count.second];
+  if (m_frames.second == NULL) return -1;
+
+  Frame &f = m_frames.second[0];
+  f.pos = pos;
+
+  const auto frame_size = size;
+  if (frame_size > LONG_MAX || frame_size <= 0) return E_FILE_FORMAT_INVALID;
+
+  f.len = static_cast<long>(frame_size);
+
+  return 0;
 }
 
 long long Block::GetTimeCode(const Cluster* pCluster) const {
@@ -8074,13 +8155,26 @@ Block::Lacing Block::GetLacing() const {
   return static_cast<Lacing>(value);
 }
 
-int Block::GetFrameCount() const { return m_frame_count; }
+int Block::GetFrameCount() const { return m_frame_count.first; }
 
-const Block::Frame& Block::GetFrame(int idx) const {
+int Block::GetFrameAddCount() const { return m_frame_count.second; }
+
+const Block::Frame &Block::GetFrame(int idx) const {
   assert(idx >= 0);
-  assert(idx < m_frame_count);
+  assert(idx < m_frame_count.first);
 
-  const Frame& f = m_frames[idx];
+  const Frame &f = m_frames.first[idx];
+  assert(f.pos > 0);
+  assert(f.len > 0);
+
+  return f;
+}
+
+const Block::Frame &Block::GetFrameAdd(int idx) const {
+  assert(idx >= 0);
+  assert(idx < m_frame_count.second);
+
+  const Frame &f = m_frames.second[idx];
   assert(f.pos > 0);
   assert(f.len > 0);
 

@@ -9,6 +9,7 @@
 #define MKVPARSER_MKVPARSER_H_
 
 #include <cstddef>
+#include <utility>
 
 namespace mkvparser {
 
@@ -73,13 +74,15 @@ class Block {
   Block& operator=(const Block&);
 
  public:
-  const long long m_start;
-  const long long m_size;
-
-  Block(long long start, long long size, long long discard_padding);
+  const std::pair<long long, long long> m_start;
+  const std::pair<long long, long long> m_size;
+  
+  Block(const std::pair<long long, long long> &start, const std::pair<long long, long long> &size, long long discard_padding);
+  Block(std::pair<long long, long long> &&start, std::pair<long long, long long> &&size, long long discard_padding);
   ~Block();
 
-  long Parse(const Cluster*);
+  long Parse(const Cluster *);
+  long ParseAdd(const Cluster *);
 
   long long GetTrackNumber() const;
   long long GetTimeCode(const Cluster*) const;  // absolute, but not scaled
@@ -92,6 +95,7 @@ class Block {
   Lacing GetLacing() const;
 
   int GetFrameCount() const;  // to index frames: [0, count)
+  int GetFrameAddCount() const;
 
   struct Frame {
     long long pos;  // absolute offset
@@ -100,7 +104,8 @@ class Block {
     long Read(IMkvReader*, unsigned char*) const;
   };
 
-  const Frame& GetFrame(int frame_index) const;
+  const Frame &GetFrame(int frame_index) const;
+  const Frame &GetFrameAdd(int frame_index) const;
 
   long long GetDiscardPadding() const;
 
@@ -109,8 +114,8 @@ class Block {
   short m_timecode;  // relative to cluster
   unsigned char m_flags;
 
-  Frame* m_frames;
-  int m_frame_count;
+  std::pair<Frame*, Frame*> m_frames;
+  std::pair<int, int> m_frame_count;
 
  protected:
   const long long m_discard_padding;
@@ -160,8 +165,8 @@ class BlockGroup : public BlockEntry {
 
  public:
   BlockGroup(Cluster*, long index,
-             long long block_start,  // absolute pos of block's payload
-             long long block_size,  // size of block's payload
+             std::pair<long long, long long> block_start,   // absolute pos of block's payload
+             std::pair<long long, long long> block_size,  // size of block's payload
              long long prev, long long next, long long duration,
              long long discard_padding);
 
