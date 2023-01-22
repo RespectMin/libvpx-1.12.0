@@ -178,7 +178,7 @@ int webm_read_frame(struct WebmInputContext *webm_ctx, uint8_t **buffer,
   const mkvparser::Block::Frame &frame =
       block->GetFrame(webm_ctx->block_frame_index);
 
-  int total_len = frame.len;
+  long total_len = frame.len;
 
   if (block->GetFrameAddCount() > 0) {
     const mkvparser::Block::Frame &frame_a =
